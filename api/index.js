@@ -1,6 +1,6 @@
 const manifest = {
   id: "community.streamisko",
-  version: "0.5.1",
+  version: "0.6.0",
   name: "Streamiško",
   description: "Minimal Streamiško Stremio addon scaffold.",
   resources: ["stream"],
@@ -39,7 +39,7 @@ function getSkTorrentCredentials() {
 
 function getSkTorrentHeaders(accept) {
   const headers = {
-    "User-Agent": "Mozilla/5.0 Streamisko/0.5.1",
+    "User-Agent": "Mozilla/5.0 Streamisko/0.6",
     Accept: accept,
     "Accept-Language": "sk,cs;q=0.9,en;q=0.6",
     Referer: "https://sktorrent.eu/"
@@ -51,6 +51,63 @@ function getSkTorrentHeaders(accept) {
   }
 
   return headers;
+}
+
+function getTorBoxApiKey() {
+  return String(process.env.TORBOX_API_KEY || "").trim();
+}
+
+async function getTorBoxConnectionStatus() {
+  const apiKey = getTorBoxApiKey();
+
+  if (!apiKey) {
+    return "TorBox: Not connected ❌ (API key missing)";
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+
+  try {
+    const response = await fetch(
+      "https://api.torbox.app/v1/api/user/me?settings=false",
+      {
+        signal: controller.signal,
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          Accept: "application/json",
+          "User-Agent": "Streamisko/0.6"
+        }
+      }
+    );
+
+    let body = null;
+    try {
+      body = await response.json();
+    } catch {
+      body = null;
+    }
+
+    if (response.ok && body && body.success === true && body.data) {
+      return "TorBox: Connected ✅";
+    }
+
+    const error = body && body.error ? String(body.error).toUpperCase() : "";
+    if (
+      response.status === 401 ||
+      response.status === 403 ||
+      error === "BAD_TOKEN" ||
+      error === "NO_AUTH" ||
+      error === "AUTH_ERROR"
+    ) {
+      return "TorBox: Not connected ❌ (invalid API key)";
+    }
+
+    return `TorBox: Not connected ❌ (API error${response.status ? ` ${response.status}` : ""})`;
+  } catch {
+    return "TorBox: Not connected ❌ (API unreachable)";
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 async function getMovieDetails(imdbId) {
@@ -556,13 +613,16 @@ module.exports = async function handler(req, res) {
     }
 
     const imdbId = String(req.query.id || "");
-    const movie = await getMovieDetails(imdbId);
+    const [movie, torBoxStatus] = await Promise.all([
+      getMovieDetails(imdbId),
+      getTorBoxConnectionStatus()
+    ]);
     const foundTorrents = await findSkTorrentResults(movie);
     const torrents = await addTorrentFileNames(foundTorrents);
 
     const helloStream = {
       name: "Streamiško",
-      description: `Hello Streamiško 👋\n${movie.name} (${movie.year}) • IMDb: ${imdbId || "unknown"}\nFound torrents on sktorrent.eu: ${torrents.length}`,
+      description: `Hello Streamiško 👋\n${movie.name} (${movie.year}) • IMDb: ${imdbId || "unknown"}\nFound torrents on sktorrent.eu: ${torrents.length}\n${torBoxStatus}`,
       externalUrl: getBaseUrl(req)
     };
 
@@ -583,7 +643,7 @@ module.exports = async function handler(req, res) {
   </head>
   <body>
     <h1>Hello Streamiško 👋</h1>
-    <p>This is the first minimal Stremio addon scaffold.</p>
+    <p>This is the Streamiško Stremio addon.</p>
   </body>
 </html>`);
   }
