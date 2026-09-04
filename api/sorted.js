@@ -1,4 +1,5 @@
-const streamiskoHandler = require("./index");
+const movieHandler = require("./index");
+const seriesHandler = require("./series");
 
 function parseSizeBytes(value) {
   const text = String(value || "").trim();
@@ -87,9 +88,10 @@ function captureResponse() {
 }
 
 module.exports = async function handler(req, res) {
+  const upstreamHandler = req.query.type === "series" ? seriesHandler : movieHandler;
   const { response: capturedRes, done } = captureResponse();
 
-  await streamiskoHandler(req, capturedRes);
+  await upstreamHandler(req, capturedRes);
   const captured = await done;
 
   for (const header of captured.headers) {
