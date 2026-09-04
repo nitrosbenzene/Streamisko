@@ -1,5 +1,5 @@
 const movieHandler = require("./index");
-const seriesHandler = require("./series-v3");
+const seriesHandler = require("./series-v4");
 
 function parseSizeBytes(value) {
   const text = String(value || "").trim();
