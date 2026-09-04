@@ -13,6 +13,7 @@ For every movie, the addon:
 5. Adds one additional Stremio stream for each unique SKTorrent result.
 6. When SKTorrent credentials are configured, authenticates to the torrent download endpoint, reads the `.torrent` metadata, and shows a meaningful torrent filename.
 7. Extracts the torrent info hash and checks whether that torrent is cached on TorBox.
+8. For torrents reported as cached on TorBox, exposes a playable Stremio stream URL. Playback is resolved lazily only after you click that stream.
 
 The Hello stream includes information such as:
 
@@ -33,12 +34,15 @@ Torrent entries currently show:
 - Added date
 - SKTorrent ID
 
-Selecting a torrent entry currently opens its SKTorrent detail page. Playable TorBox-backed streams can be added in a later step.
+When `Cached on TorBox: Yes ✅`, selecting the stream calls Streamiško's server-side play route. Streamiško re-checks the cache, finds or adds the cached torrent to the configured TorBox account with `add_only_if_cached=true`, selects the largest likely video file, requests a TorBox direct link, and redirects Stremio to that link.
+
+Uncached or unknown-cache results remain non-playable and open the SKTorrent detail page instead.
 
 ## Endpoints
 
 - `/manifest.json` — Stremio addon manifest
 - `/stream/movie/:id.json` — movie stream results
+- `/api/index?route=play&torrent=<SKTORRENT_ID>` — internal lazy playback resolver for cached TorBox torrents
 - `/` — tiny landing page
 
 ## Environment variables
@@ -70,9 +74,11 @@ The addon currently uses it to:
 - verify that the TorBox API key is valid;
 - show `TorBox: Connected ✅` or an error status in the Hello stream;
 - check each found torrent's info hash against TorBox's cache API;
-- show `Cached on TorBox: Yes ✅`, `No ❌`, or `Unknown ⚠️` in each torrent stream entry.
+- show `Cached on TorBox: Yes ✅`, `No ❌`, or `Unknown ⚠️` in each torrent stream entry;
+- add a cached torrent to the configured TorBox account only when playback is requested;
+- request a direct TorBox file URL and redirect Stremio to it.
 
-The API key is never included in the Stremio response and should only be stored as a private environment variable.
+The API key is never included in the Stremio stream-list response and should only be stored as a private environment variable.
 
 ## Configure on Vercel
 
@@ -121,7 +127,6 @@ Use:
 Later iterations can add:
 
 1. Better torrent metadata parsing and ranking.
-2. Torrent selection rules.
-3. Adding selected torrents to TorBox.
-4. Returning playable TorBox-backed Stremio streams.
-5. Caching repeated SKTorrent/TorBox lookups for faster stream responses.
+2. Better file selection for multi-file torrents and episode packs.
+3. Caching repeated SKTorrent/TorBox lookups for faster stream responses.
+4. More explicit playback diagnostics in Stremio when TorBox cannot resolve a file.
