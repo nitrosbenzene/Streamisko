@@ -26,7 +26,56 @@ function getBaseUrl(req) {
   return `${protocol}://${host}`;
 }
 
-module.exports = function handler(req, res) {
+async function getMovieDetails(imdbId) {
+  const fallback = {
+    name: "Unknown movie",
+    year: "Unknown year"
+  };
+
+  if (!/^tt\d+$/.test(imdbId)) {
+    return fallback;
+  }
+
+  try {
+    const response = await fetch(
+      `https://v3-cinemeta.strem.io/meta/movie/${encodeURIComponent(imdbId)}.json`
+    );
+
+    if (!response.ok) {
+      return fallback;
+    }
+
+    const data = await response.json();
+    const meta = data && data.meta;
+
+    if (!meta) {
+      return fallback;
+    }
+
+    let year = fallback.year;
+
+    if (meta.releaseInfo) {
+      const yearMatch = String(meta.releaseInfo).match(/\d{4}/);
+      if (yearMatch) {
+        year = yearMatch[0];
+      }
+    } else if (meta.released) {
+      const releasedYear = new Date(meta.released).getUTCFullYear();
+      if (Number.isFinite(releasedYear)) {
+        year = String(releasedYear);
+      }
+    }
+
+    return {
+      name: meta.name || fallback.name,
+      year
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+module.exports = async function handler(req, res) {
   setCors(res);
 
   if (req.method === "OPTIONS") {
@@ -49,11 +98,14 @@ module.exports = function handler(req, res) {
       return sendJson(res, 200, { streams: [] });
     }
 
+    const imdbId = String(req.query.id || "");
+    const movie = await getMovieDetails(imdbId);
+
     return sendJson(res, 200, {
       streams: [
         {
           name: "Streamiško",
-          description: "Hello Streamiško 👋",
+          description: `Hello Streamiško 👋\n${movie.name} (${movie.year}) • IMDb: ${imdbId || "unknown"}`,
           externalUrl: getBaseUrl(req)
         }
       ]
