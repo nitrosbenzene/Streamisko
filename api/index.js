@@ -1,6 +1,6 @@
 const manifest = {
   id: "community.streamisko",
-  version: "0.3.0",
+  version: "0.3.1",
   name: "Streamiško",
   description: "Minimal Streamiško Stremio addon scaffold.",
   resources: ["stream"],
@@ -83,7 +83,7 @@ async function fetchSkTorrentPage(url) {
     const response = await fetch(url, {
       signal: controller.signal,
       headers: {
-        "User-Agent": "Mozilla/5.0 Streamisko/0.3",
+        "User-Agent": "Mozilla/5.0 Streamisko/0.3.1",
         Accept: "text/html,application/xhtml+xml"
       }
     });
@@ -116,7 +116,7 @@ function addTorrentIdsFromHtml(html, torrentIds) {
 }
 
 function getLastSearchPage(html) {
-  let lastPage = 1;
+  let lastPage = 0;
   const pageRegex = /(?:\?|&|&amp;)page=(\d+)/gi;
 
   for (const match of html.matchAll(pageRegex)) {
@@ -157,7 +157,10 @@ async function countSkTorrentResults(movie) {
   const lastPage = getLastSearchPage(firstPageHtml);
   const pages = [];
 
-  for (let page = 2; page <= lastPage; page += 1) {
+  // SKTorrent's default result page has no page parameter. Its next page can be
+  // page=1, so start at 1 rather than 2. Torrent IDs are deduplicated, making
+  // this safe even if SKTorrent ever aliases page=1 to the default page.
+  for (let page = 1; page <= lastPage; page += 1) {
     pages.push(page);
   }
 
