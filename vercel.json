@@ -1,0 +1,16 @@
+{
+  "rewrites": [
+    {
+      "source": "/manifest.json",
+      "destination": "/api/index?route=manifest"
+    },
+    {
+      "source": "/stream/:type/:id.json",
+      "destination": "/api/index?route=stream&type=:type&id=:id"
+    },
+    {
+      "source": "/",
+      "destination": "/api/index?route=home"
+    }
+  ]
+}
