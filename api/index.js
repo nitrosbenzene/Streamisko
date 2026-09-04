@@ -1,6 +1,6 @@
 const manifest = {
   id: "community.streamisko",
-  version: "0.3.1",
+  version: "0.4.0",
   name: "Streamiško",
   description: "Minimal Streamiško Stremio addon scaffold.",
   resources: ["stream"],
@@ -83,7 +83,7 @@ async function fetchSkTorrentPage(url) {
     const response = await fetch(url, {
       signal: controller.signal,
       headers: {
-        "User-Agent": "Mozilla/5.0 Streamisko/0.3.1",
+        "User-Agent": "Mozilla/5.0 Streamisko/0.4",
         Accept: "text/html,application/xhtml+xml"
       }
     });
@@ -100,19 +100,40 @@ async function fetchSkTorrentPage(url) {
   }
 }
 
-function addTorrentIdsFromHtml(html, torrentIds) {
-  if (!html) {
-    return;
-  }
+function decodeHtmlEntities(value) {
+  return String(value || "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#(?:0*39|x0*27);/gi, "'")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&#(\d+);/g, (_, code) => String.fromCodePoint(Number(code)))
+    .replace(/&#x([a-f0-9]+);/gi, (_, code) =>
+      String.fromCodePoint(parseInt(code, 16))
+    );
+}
 
-  const detailLinkRegex = /details\.php\?[^"'<>\s]*/gi;
+function htmlToText(value) {
+  return decodeHtmlEntities(String(value || "").replace(/<[^>]*>/g, " "))
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
-  for (const match of html.matchAll(detailLinkRegex)) {
-    const idMatch = match[0].match(/[?&](?:amp;)?id=([a-f0-9]{40})/i);
-    if (idMatch) {
-      torrentIds.add(idMatch[1].toLowerCase());
+function getTorrentNameFromHref(href, id) {
+  try {
+    const decodedHref = decodeHtmlEntities(href);
+    const url = new URL(decodedHref, "https://sktorrent.eu/torrent/");
+    const name = url.searchParams.get("name");
+
+    if (name) {
+      return name.replace(/-/g, " ").replace(/\s+/g, " ").trim();
     }
+  } catch {
+    // Fall through to a short ID label.
   }
+
+  return `SKTorrent ${id.slice(0, 8)}`;
 }
 
 function getLastSearchPage(html) {
@@ -129,9 +150,64 @@ function getLastSearchPage(html) {
   return lastPage;
 }
 
-async function countSkTorrentResults(movie) {
+function mergeTorrentResult(torrentsById, torrent) {
+  const existing = torrentsById.get(torrent.id);
+
+  if (!existing) {
+    torrentsById.set(torrent.id, torrent);
+    return;
+  }
+
+  for (const key of ["title", "size", "added", "seeders", "leechers"]) {
+    if ((!existing[key] || existing[key] === "?") && torrent[key]) {
+      existing[key] = torrent[key];
+    }
+  }
+}
+
+function addTorrentResultsFromHtml(html, torrentsById) {
+  if (!html) {
+    return;
+  }
+
+  const anchorRegex = /<a\b[^>]*href=["']([^"']*details\.php\?[^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  const matches = Array.from(html.matchAll(anchorRegex));
+
+  for (let index = 0; index < matches.length; index += 1) {
+    const match = matches[index];
+    const href = decodeHtmlEntities(match[1]);
+    const idMatch = href.match(/[?&]id=([a-f0-9]{40})/i);
+
+    if (!idMatch) {
+      continue;
+    }
+
+    const id = idMatch[1].toLowerCase();
+    const anchorTitle = htmlToText(match[2]);
+    const nextMatch = matches[index + 1];
+    const segmentStart = match.index + match[0].length;
+    const segmentEnd = nextMatch ? nextMatch.index : Math.min(html.length, segmentStart + 2500);
+    const segmentText = htmlToText(html.slice(segmentStart, segmentEnd));
+
+    const sizeMatch = segmentText.match(/Velkost\s*:?\s*(.+?)(?=\s*\|\s*Pridany|\s+Pridany\b|$)/i);
+    const addedMatch = segmentText.match(/Pridany\s*:?\s*([0-9./-]+)/i);
+    const seedersMatch = segmentText.match(/Odosielaju\s*:\s*(\d+)/i);
+    const leechersMatch = segmentText.match(/Stahuju\s*:\s*(\d+)/i);
+
+    mergeTorrentResult(torrentsById, {
+      id,
+      title: anchorTitle || getTorrentNameFromHref(href, id),
+      size: sizeMatch ? sizeMatch[1].trim() : "?",
+      added: addedMatch ? addedMatch[1] : "?",
+      seeders: seedersMatch ? seedersMatch[1] : "?",
+      leechers: leechersMatch ? leechersMatch[1] : "?"
+    });
+  }
+}
+
+async function findSkTorrentResults(movie) {
   if (!movie || movie.name === "Unknown movie") {
-    return 0;
+    return [];
   }
 
   const searchTerms = [movie.name];
@@ -148,18 +224,17 @@ async function countSkTorrentResults(movie) {
 
   const firstPageHtml = await fetchSkTorrentPage(searchUrl);
   if (!firstPageHtml) {
-    return 0;
+    return [];
   }
 
-  const torrentIds = new Set();
-  addTorrentIdsFromHtml(firstPageHtml, torrentIds);
+  const torrentsById = new Map();
+  addTorrentResultsFromHtml(firstPageHtml, torrentsById);
 
   const lastPage = getLastSearchPage(firstPageHtml);
   const pages = [];
 
-  // SKTorrent's default result page has no page parameter. Its next page can be
-  // page=1, so start at 1 rather than 2. Torrent IDs are deduplicated, making
-  // this safe even if SKTorrent ever aliases page=1 to the default page.
+  // The unnumbered response is the first page; SKTorrent can use page=1 for
+  // the next page. IDs are deduplicated if the site aliases either URL.
   for (let page = 1; page <= lastPage; page += 1) {
     pages.push(page);
   }
@@ -177,11 +252,25 @@ async function countSkTorrentResults(movie) {
     );
 
     for (const html of htmlPages) {
-      addTorrentIdsFromHtml(html, torrentIds);
+      addTorrentResultsFromHtml(html, torrentsById);
     }
   }
 
-  return torrentIds.size;
+  return Array.from(torrentsById.values());
+}
+
+function torrentToStream(torrent, index) {
+  const details = [
+    torrent.title,
+    `Size: ${torrent.size} • Seeders: ${torrent.seeders} • Leechers: ${torrent.leechers}`,
+    `Added: ${torrent.added} • SKTorrent ID: ${torrent.id}`
+  ];
+
+  return {
+    name: `Streamiško • SKTorrent #${index + 1}`,
+    description: details.join("\n"),
+    externalUrl: `https://sktorrent.eu/torrent/details.php?id=${torrent.id}`
+  };
 }
 
 module.exports = async function handler(req, res) {
@@ -209,16 +298,16 @@ module.exports = async function handler(req, res) {
 
     const imdbId = String(req.query.id || "");
     const movie = await getMovieDetails(imdbId);
-    const torrentCount = await countSkTorrentResults(movie);
+    const torrents = await findSkTorrentResults(movie);
+
+    const helloStream = {
+      name: "Streamiško",
+      description: `Hello Streamiško 👋\n${movie.name} (${movie.year}) • IMDb: ${imdbId || "unknown"}\nFound torrents on sktorrent.eu: ${torrents.length}`,
+      externalUrl: getBaseUrl(req)
+    };
 
     return sendJson(res, 200, {
-      streams: [
-        {
-          name: "Streamiško",
-          description: `Hello Streamiško 👋\n${movie.name} (${movie.year}) • IMDb: ${imdbId || "unknown"}\nFound torrents on sktorrent.eu: ${torrentCount}`,
-          externalUrl: getBaseUrl(req)
-        }
-      ]
+      streams: [helloStream, ...torrents.map(torrentToStream)]
     });
   }
 
