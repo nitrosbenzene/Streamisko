@@ -1,4 +1,4 @@
-const movieHandler = require("./index");
+const movieHandler = require("./movie");
 const seriesHandler = require("./series-v4");
 
 function parseSizeBytes(value) {
