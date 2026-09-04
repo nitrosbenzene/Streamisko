@@ -6,7 +6,7 @@
     },
     {
       "source": "/stream/:type/:id.json",
-      "destination": "/api/index?route=stream&type=:type&id=:id"
+      "destination": "/api/sorted?route=stream&type=:type&id=:id"
     },
     {
       "source": "/",
