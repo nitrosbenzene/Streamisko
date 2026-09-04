@@ -1,8 +1,8 @@
 const manifest = {
   id: "community.streamisko",
-  version: "0.9.0",
+  version: "1.0.0",
   name: "Streamiško",
-  description: "Streamiško Stremio addon with SKTorrent search and TorBox cache playback.",
+  description: "Streamiško Stremio addon with SKTorrent search, episode-aware series matching and TorBox cache playback.",
   resources: ["stream"],
   types: ["movie", "series"],
   idPrefixes: ["tt"],
