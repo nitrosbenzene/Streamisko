@@ -2,7 +2,7 @@ const crypto = require("node:crypto");
 
 const manifest = {
   id: "community.streamisko",
-  version: "0.7.0",
+  version: "0.8.0",
   name: "Streamiško",
   description: "Minimal Streamiško Stremio addon scaffold.",
   resources: ["stream"],
@@ -13,13 +13,19 @@ const manifest = {
 function setCors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Range");
 }
 
 function sendJson(res, statusCode, body) {
   res.statusCode = statusCode;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.end(JSON.stringify(body));
+}
+
+function sendText(res, statusCode, body) {
+  res.statusCode = statusCode;
+  res.setHeader("Content-Type", "text/plain; charset=utf-8");
+  res.end(body);
 }
 
 function getBaseUrl(req) {
@@ -31,7 +37,6 @@ function getBaseUrl(req) {
 async function fetchWithTimeout(url, options = {}, timeoutMs = 6000) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
-
   try {
     return await fetch(url, { ...options, signal: controller.signal });
   } catch {
@@ -49,7 +54,7 @@ function getSkTorrentCredentials() {
 
 function getSkTorrentHeaders(accept) {
   const headers = {
-    "User-Agent": "Mozilla/5.0 Streamisko/0.7",
+    "User-Agent": "Mozilla/5.0 Streamisko/0.8",
     Accept: accept,
     "Accept-Language": "sk,cs;q=0.9,en;q=0.6",
     Referer: "https://sktorrent.eu/"
@@ -59,7 +64,6 @@ function getSkTorrentHeaders(accept) {
   if (credentials) {
     headers.Cookie = `uid=${credentials.uid}; pass=${credentials.pass}`;
   }
-
   return headers;
 }
 
@@ -67,12 +71,34 @@ function getTorBoxApiKey() {
   return String(process.env.TORBOX_API_KEY || "").trim();
 }
 
-function getTorBoxHeaders() {
+function getTorBoxHeaders(extra = {}) {
   return {
     Authorization: `Bearer ${getTorBoxApiKey()}`,
     Accept: "application/json",
-    "User-Agent": "Streamisko/0.7"
+    "User-Agent": "Streamisko/0.8",
+    ...extra
   };
+}
+
+async function parseTorBoxResponse(response) {
+  if (!response) return { ok: false, status: 0, payload: null };
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch {
+    payload = null;
+  }
+  return {
+    ok: response.ok && (!payload || payload.success !== false),
+    status: response.status,
+    payload
+  };
+}
+
+function unwrapTorBoxPayload(payload) {
+  return payload && Object.prototype.hasOwnProperty.call(payload, "data")
+    ? payload.data
+    : payload;
 }
 
 async function getTorBoxConnectionStatus() {
@@ -80,39 +106,32 @@ async function getTorBoxConnectionStatus() {
     return "TorBox: Not connected ❌ (API key missing)";
   }
 
-  const response = await fetchWithTimeout(
-    "https://api.torbox.app/v1/api/user/me?settings=false",
-    { headers: getTorBoxHeaders() },
-    5000
+  const result = await parseTorBoxResponse(
+    await fetchWithTimeout(
+      "https://api.torbox.app/v1/api/user/me?settings=false",
+      { headers: getTorBoxHeaders() },
+      5000
+    )
   );
 
-  if (!response) {
-    return "TorBox: Not connected ❌ (API unreachable)";
-  }
-
-  let body = null;
-  try {
-    body = await response.json();
-  } catch {
-    body = null;
-  }
-
-  if (response.ok && body && body.success === true && body.data) {
+  if (result.ok && result.payload && result.payload.success === true && result.payload.data) {
     return "TorBox: Connected ✅";
   }
 
-  const error = body && body.error ? String(body.error).toUpperCase() : "";
+  const error = result.payload && result.payload.error
+    ? String(result.payload.error).toUpperCase()
+    : "";
   if (
-    response.status === 401 ||
-    response.status === 403 ||
+    result.status === 401 ||
+    result.status === 403 ||
     error === "BAD_TOKEN" ||
     error === "NO_AUTH" ||
     error === "AUTH_ERROR"
   ) {
     return "TorBox: Not connected ❌ (invalid API key)";
   }
-
-  return `TorBox: Not connected ❌ (API error ${response.status})`;
+  if (!result.status) return "TorBox: Not connected ❌ (API unreachable)";
+  return `TorBox: Not connected ❌ (API error ${result.status})`;
 }
 
 async function getMovieDetails(imdbId) {
@@ -396,7 +415,9 @@ async function fetchTorrentMetadata(id) {
   );
 
   if (!response || !response.ok) return { fileName: null, infoHash: null };
-  if (/text\/html/i.test(response.headers.get("content-type") || "")) return { fileName: null, infoHash: null };
+  if (/text\/html/i.test(response.headers.get("content-type") || "")) {
+    return { fileName: null, infoHash: null };
+  }
 
   try {
     const headerName = contentDispositionFileName(response.headers.get("content-disposition") || "");
@@ -434,13 +455,15 @@ async function addTorrentMetadata(torrents) {
         ...(await fetchTorrentMetadata(torrent.id))
       }))
     );
-    for (let offset = 0; offset < batchResults.length; offset += 1) enriched[index + offset] = batchResults[offset];
+    for (let offset = 0; offset < batchResults.length; offset += 1) {
+      enriched[index + offset] = batchResults[offset];
+    }
   }
   return enriched;
 }
 
 function cachedHashesFromTorBoxPayload(payload) {
-  const data = payload && Object.prototype.hasOwnProperty.call(payload, "data") ? payload.data : payload;
+  const data = unwrapTorBoxPayload(payload);
   const hashes = new Set();
 
   if (Array.isArray(data)) {
@@ -461,7 +484,6 @@ function cachedHashesFromTorBoxPayload(payload) {
       if (hash) hashes.add(hash);
     }
   }
-
   return hashes;
 }
 
@@ -471,6 +493,7 @@ async function getTorBoxCacheMap(torrents) {
       .map((torrent) => String(torrent.infoHash || "").toLowerCase())
       .filter((hash) => /^[a-f0-9]{40}$/.test(hash))
   )];
+
   const result = new Map(hashes.map((hash) => [hash, null]));
   if (!getTorBoxApiKey() || !hashes.length) return result;
 
@@ -481,21 +504,154 @@ async function getTorBoxCacheMap(torrents) {
     url.searchParams.set("format", "object");
     url.searchParams.set("list_files", "false");
 
-    const response = await fetchWithTimeout(url, { headers: getTorBoxHeaders() }, 6000);
-    if (!response || !response.ok) continue;
+    const torBoxResponse = await parseTorBoxResponse(
+      await fetchWithTimeout(url, { headers: getTorBoxHeaders() }, 6000)
+    );
+    if (!torBoxResponse.ok) continue;
 
-    let payload = null;
-    try { payload = await response.json(); } catch { continue; }
-    if (payload && payload.success === false) continue;
-
-    const cachedHashes = cachedHashesFromTorBoxPayload(payload);
+    const cachedHashes = cachedHashesFromTorBoxPayload(torBoxResponse.payload);
     for (const hash of chunk) result.set(hash, cachedHashes.has(hash));
   }
 
   return result;
 }
 
-function torrentToStream(torrent, index) {
+function torBoxTorrentList(payload) {
+  const data = unwrapTorBoxPayload(payload);
+  if (Array.isArray(data)) return data;
+  if (data && Array.isArray(data.torrents)) return data.torrents;
+  if (data && typeof data === "object" && data.id != null) return [data];
+  return [];
+}
+
+function torBoxTorrentHash(item) {
+  return String((item && (item.hash || item.info_hash)) || "").toLowerCase();
+}
+
+async function fetchTorBoxTorrentList(id = null) {
+  const url = new URL("https://api.torbox.app/v1/api/torrents/mylist");
+  url.searchParams.set("bypass_cache", "true");
+  if (id != null) url.searchParams.set("id", String(id));
+
+  const result = await parseTorBoxResponse(
+    await fetchWithTimeout(url, { headers: getTorBoxHeaders() }, 8000)
+  );
+  return result.ok ? torBoxTorrentList(result.payload) : [];
+}
+
+async function createCachedTorBoxTorrent(infoHash) {
+  const body = new FormData();
+  body.append("magnet", `magnet:?xt=urn:btih:${infoHash}`);
+  body.append("seed", "1");
+  body.append("allow_zip", "false");
+  body.append("add_only_if_cached", "true");
+
+  const result = await parseTorBoxResponse(
+    await fetchWithTimeout(
+      "https://api.torbox.app/v1/api/torrents/createtorrent",
+      { method: "POST", headers: getTorBoxHeaders(), body },
+      12000
+    )
+  );
+
+  if (!result.ok) {
+    const detail = result.payload && (result.payload.detail || result.payload.error);
+    throw new Error(detail || `TorBox create torrent failed (${result.status || "network"})`);
+  }
+
+  const data = unwrapTorBoxPayload(result.payload);
+  const id = data && typeof data === "object"
+    ? (data.torrent_id ?? data.id)
+    : data;
+  if (id == null) throw new Error("TorBox did not return a torrent id");
+  return id;
+}
+
+async function ensureTorBoxTorrent(infoHash) {
+  const normalized = String(infoHash || "").toLowerCase();
+  const existing = (await fetchTorBoxTorrentList()).find(
+    (item) => torBoxTorrentHash(item) === normalized
+  );
+  if (existing && Array.isArray(existing.files) && existing.files.length) return existing;
+
+  const torrentId = existing && existing.id != null
+    ? existing.id
+    : await createCachedTorBoxTorrent(normalized);
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const matches = await fetchTorBoxTorrentList(torrentId);
+    const item = matches.find(
+      (entry) =>
+        String(entry && entry.id) === String(torrentId) ||
+        torBoxTorrentHash(entry) === normalized
+    );
+    if (item && Array.isArray(item.files) && item.files.length) return item;
+    await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+  }
+
+  throw new Error("TorBox torrent is not ready for streaming");
+}
+
+function chooseTorBoxMediaFile(files) {
+  if (!Array.isArray(files) || !files.length) return null;
+
+  const videoExtension = /\.(mkv|mp4|m4v|avi|mov|webm|ts|m2ts|mpg|mpeg)$/i;
+  const videoFiles = files.filter((file) =>
+    videoExtension.test(String(file && (file.name || file.short_name || "")))
+  );
+  const candidates = videoFiles.length ? videoFiles : files;
+
+  return candidates
+    .filter(Boolean)
+    .slice()
+    .sort((a, b) => Number(b.size || b.length || 0) - Number(a.size || a.length || 0))[0] || null;
+}
+
+async function requestTorBoxDirectLink(torrentId, fileId) {
+  const apiKey = getTorBoxApiKey();
+  const url = new URL("https://api.torbox.app/v1/api/torrents/requestdl");
+  url.searchParams.set("token", apiKey);
+  url.searchParams.set("torrent_id", String(torrentId));
+  url.searchParams.set("file_id", String(fileId));
+
+  const result = await parseTorBoxResponse(
+    await fetchWithTimeout(url, { headers: getTorBoxHeaders() }, 10000)
+  );
+  if (!result.ok) {
+    const detail = result.payload && (result.payload.detail || result.payload.error);
+    throw new Error(detail || `TorBox link request failed (${result.status || "network"})`);
+  }
+
+  const data = unwrapTorBoxPayload(result.payload);
+  const directUrl = typeof data === "string"
+    ? data
+    : data && (data.link || data.url);
+  if (!directUrl || !/^https?:\/\//i.test(directUrl)) {
+    throw new Error("TorBox did not return a playable URL");
+  }
+  return directUrl;
+}
+
+async function resolvePlayableTorBoxUrl(skTorrentId) {
+  if (!getTorBoxApiKey()) throw new Error("TorBox API key is not configured");
+  if (!/^[a-f0-9]{40}$/i.test(skTorrentId)) throw new Error("Invalid SKTorrent id");
+
+  const metadata = await fetchTorrentMetadata(skTorrentId);
+  if (!metadata.infoHash) throw new Error("Could not read torrent info hash");
+
+  const cacheMap = await getTorBoxCacheMap([{ infoHash: metadata.infoHash }]);
+  if (cacheMap.get(metadata.infoHash.toLowerCase()) !== true) {
+    throw new Error("Torrent is not currently cached on TorBox");
+  }
+
+  const torrent = await ensureTorBoxTorrent(metadata.infoHash);
+  const file = chooseTorBoxMediaFile(torrent.files);
+  if (!file || file.id == null) throw new Error("No playable file found in TorBox torrent");
+
+  return requestTorBoxDirectLink(torrent.id, file.id);
+}
+
+function torrentToStream(torrent, index, baseUrl) {
   const fileName = torrent.fileName || "Unavailable (torrent metadata could not be read)";
   const cacheStatus = torrent.torBoxCached === true
     ? "Yes ✅"
@@ -503,7 +659,7 @@ function torrentToStream(torrent, index) {
       ? "No ❌"
       : "Unknown ⚠️";
 
-  return {
+  const stream = {
     name: `Streamiško • SKTorrent #${index + 1}`,
     description: [
       torrent.title,
@@ -511,9 +667,19 @@ function torrentToStream(torrent, index) {
       `Cached on TorBox: ${cacheStatus}`,
       `Size: ${torrent.size} • Seeders: ${torrent.seeders} • Leechers: ${torrent.leechers}`,
       `Added: ${torrent.added} • SKTorrent ID: ${torrent.id}`
-    ].join("\n"),
-    externalUrl: `https://sktorrent.eu/torrent/details.php?id=${torrent.id}`
+    ].join("\n")
   };
+
+  if (torrent.torBoxCached === true && torrent.infoHash) {
+    const playUrl = new URL(`${baseUrl}/api/index`);
+    playUrl.searchParams.set("route", "play");
+    playUrl.searchParams.set("torrent", torrent.id);
+    stream.url = playUrl.toString();
+  } else {
+    stream.externalUrl = `https://sktorrent.eu/torrent/details.php?id=${torrent.id}`;
+  }
+
+  return stream;
 }
 
 module.exports = async function handler(req, res) {
@@ -528,6 +694,23 @@ module.exports = async function handler(req, res) {
 
   const route = req.query.route;
   if (route === "manifest") return sendJson(res, 200, manifest);
+
+  if (route === "play") {
+    const skTorrentId = String(req.query.torrent || "").trim().toLowerCase();
+    try {
+      const directUrl = await resolvePlayableTorBoxUrl(skTorrentId);
+      res.statusCode = 302;
+      res.setHeader("Location", directUrl);
+      res.setHeader("Cache-Control", "no-store");
+      return res.end();
+    } catch (error) {
+      return sendText(
+        res,
+        502,
+        `Streamiško could not start this TorBox stream: ${error && error.message ? error.message : "unknown error"}`
+      );
+    }
+  }
 
   if (route === "stream") {
     if (req.query.type !== "movie") return sendJson(res, 200, { streams: [] });
@@ -554,8 +737,12 @@ module.exports = async function handler(req, res) {
       externalUrl: getBaseUrl(req)
     };
 
+    const baseUrl = getBaseUrl(req);
     return sendJson(res, 200, {
-      streams: [helloStream, ...torrents.map(torrentToStream)]
+      streams: [
+        helloStream,
+        ...torrents.map((torrent, index) => torrentToStream(torrent, index, baseUrl))
+      ]
     });
   }
 
