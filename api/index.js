@@ -1,6 +1,6 @@
 const manifest = {
   id: "community.streamisko",
-  version: "0.1.0",
+  version: "0.2.0",
   name: "Streamiško",
   description: "Minimal Streamiško Stremio addon scaffold.",
   resources: ["stream"],
@@ -75,6 +75,58 @@ async function getMovieDetails(imdbId) {
   }
 }
 
+async function countSkTorrentResults(movie) {
+  if (!movie || movie.name === "Unknown movie") {
+    return 0;
+  }
+
+  const searchTerms = [movie.name];
+  if (/^\d{4}$/.test(movie.year)) {
+    searchTerms.push(movie.year);
+  }
+
+  const searchUrl = new URL("https://sktorrent.eu/torrent/torrents_v2.php");
+  searchUrl.searchParams.set("search", searchTerms.join(" "));
+  searchUrl.searchParams.set("category", "0");
+  searchUrl.searchParams.set("zaner", "");
+  searchUrl.searchParams.set("jazyk", "");
+  searchUrl.searchParams.set("active", "0");
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 6000);
+
+  try {
+    const response = await fetch(searchUrl, {
+      signal: controller.signal,
+      headers: {
+        "User-Agent": "Mozilla/5.0 Streamisko/0.2",
+        Accept: "text/html,application/xhtml+xml"
+      }
+    });
+
+    if (!response.ok) {
+      return 0;
+    }
+
+    const html = await response.text();
+    const torrentIds = new Set();
+    const detailLinkRegex = /details\.php\?[^"'<>\s]*/gi;
+
+    for (const match of html.matchAll(detailLinkRegex)) {
+      const idMatch = match[0].match(/[?&](?:amp;)?id=([a-f0-9]{40})/i);
+      if (idMatch) {
+        torrentIds.add(idMatch[1].toLowerCase());
+      }
+    }
+
+    return torrentIds.size;
+  } catch {
+    return 0;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 module.exports = async function handler(req, res) {
   setCors(res);
 
@@ -100,12 +152,13 @@ module.exports = async function handler(req, res) {
 
     const imdbId = String(req.query.id || "");
     const movie = await getMovieDetails(imdbId);
+    const torrentCount = await countSkTorrentResults(movie);
 
     return sendJson(res, 200, {
       streams: [
         {
           name: "Streamiško",
-          description: `Hello Streamiško 👋\n${movie.name} (${movie.year}) • IMDb: ${imdbId || "unknown"}`,
+          description: `Hello Streamiško 👋\n${movie.name} (${movie.year}) • IMDb: ${imdbId || "unknown"}\nFound torrents on sktorrent.eu: ${torrentCount}`,
           externalUrl: getBaseUrl(req)
         }
       ]
