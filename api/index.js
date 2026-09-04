@@ -1,6 +1,6 @@
 const manifest = {
   id: "community.streamisko",
-  version: "0.5.0",
+  version: "0.5.1",
   name: "Streamiško",
   description: "Minimal Streamiško Stremio addon scaffold.",
   resources: ["stream"],
@@ -39,7 +39,7 @@ function getSkTorrentCredentials() {
 
 function getSkTorrentHeaders(accept) {
   const headers = {
-    "User-Agent": "Mozilla/5.0 Streamisko/0.5",
+    "User-Agent": "Mozilla/5.0 Streamisko/0.5.1",
     Accept: accept,
     "Accept-Language": "sk,cs;q=0.9,en;q=0.6",
     Referer: "https://sktorrent.eu/"
@@ -257,8 +257,6 @@ async function findSkTorrentResults(movie) {
   const lastPage = getLastSearchPage(firstPageHtml);
   const pages = [];
 
-  // The unnumbered response is the first page; SKTorrent can use page=1 for
-  // the next page. IDs are deduplicated if the site aliases either URL.
   for (let page = 1; page <= lastPage; page += 1) {
     pages.push(page);
   }
@@ -311,6 +309,132 @@ function contentDispositionFileName(contentDisposition) {
   return null;
 }
 
+function isGenericSkTorrentFileName(fileName) {
+  const normalized = String(fileName || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "");
+
+  return new Set([
+    "[skt]",
+    "[skt].torrent",
+    "skt",
+    "skt.torrent",
+    "download",
+    "download.torrent"
+  ]).has(normalized);
+}
+
+function decodeBencode(buffer) {
+  let offset = 0;
+
+  function parseValue() {
+    if (offset >= buffer.length) {
+      throw new Error("Unexpected end of bencoded data");
+    }
+
+    const token = buffer[offset];
+
+    if (token === 0x69) {
+      offset += 1;
+      const end = buffer.indexOf(0x65, offset);
+      if (end === -1) {
+        throw new Error("Invalid bencoded integer");
+      }
+      const value = Number(buffer.toString("ascii", offset, end));
+      offset = end + 1;
+      return value;
+    }
+
+    if (token === 0x6c) {
+      offset += 1;
+      const values = [];
+      while (buffer[offset] !== 0x65) {
+        values.push(parseValue());
+      }
+      offset += 1;
+      return values;
+    }
+
+    if (token === 0x64) {
+      offset += 1;
+      const value = Object.create(null);
+      while (buffer[offset] !== 0x65) {
+        const keyBuffer = parseValue();
+        if (!Buffer.isBuffer(keyBuffer)) {
+          throw new Error("Invalid bencoded dictionary key");
+        }
+        const key = keyBuffer.toString("utf8");
+        value[key] = parseValue();
+      }
+      offset += 1;
+      return value;
+    }
+
+    if (token >= 0x30 && token <= 0x39) {
+      const colon = buffer.indexOf(0x3a, offset);
+      if (colon === -1) {
+        throw new Error("Invalid bencoded string");
+      }
+
+      const length = Number(buffer.toString("ascii", offset, colon));
+      if (!Number.isSafeInteger(length) || length < 0) {
+        throw new Error("Invalid bencoded string length");
+      }
+
+      const start = colon + 1;
+      const end = start + length;
+      if (end > buffer.length) {
+        throw new Error("Bencoded string exceeds buffer");
+      }
+
+      offset = end;
+      return buffer.subarray(start, end);
+    }
+
+    throw new Error("Unsupported bencoded token");
+  }
+
+  return parseValue();
+}
+
+function torrentMetadataName(buffer) {
+  try {
+    const decoded = decodeBencode(buffer);
+    const info = decoded && decoded.info;
+    if (!info) {
+      return null;
+    }
+
+    const value = info["name.utf-8"] || info.name;
+    if (!value) {
+      return null;
+    }
+
+    const name = Buffer.isBuffer(value) ? value.toString("utf8") : String(value);
+    return name.replace(/\0/g, "").trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+function makeTorrentFileName(name) {
+  if (!name) {
+    return null;
+  }
+
+  const safeName = String(name)
+    .replace(/[\\/:*?"<>|\x00-\x1f]/g, "_")
+    .replace(/[. ]+$/g, "")
+    .trim();
+
+  if (!safeName) {
+    return null;
+  }
+
+  return /\.torrent$/i.test(safeName) ? safeName : `${safeName}.torrent`;
+}
+
 async function fetchTorrentFileName(id) {
   if (!getSkTorrentCredentials()) {
     return null;
@@ -338,15 +462,21 @@ async function fetchTorrentFileName(id) {
 
     const contentDisposition = response.headers.get("content-disposition") || "";
     const headerName = contentDispositionFileName(contentDisposition);
+    const buffer = Buffer.from(await response.arrayBuffer());
+    const metadataName = makeTorrentFileName(torrentMetadataName(buffer));
 
-    if (headerName) {
+    if (metadataName) {
+      return metadataName;
+    }
+
+    if (headerName && !isGenericSkTorrentFileName(headerName)) {
       return headerName;
     }
 
     try {
       const finalUrl = new URL(response.url);
       const lastPart = decodeURIComponent(finalUrl.pathname.split("/").pop() || "");
-      if (/\.torrent$/i.test(lastPart)) {
+      if (/\.torrent$/i.test(lastPart) && !isGenericSkTorrentFileName(lastPart)) {
         return lastPart;
       }
     } catch {
@@ -387,7 +517,7 @@ async function addTorrentFileNames(torrents) {
 }
 
 function torrentToStream(torrent, index) {
-  const fileName = torrent.fileName || "Unavailable (SKTorrent auth required or download failed)";
+  const fileName = torrent.fileName || "Unavailable (torrent metadata could not be read)";
   const details = [
     torrent.title,
     `Torrent file: ${fileName}`,
