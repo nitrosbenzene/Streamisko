@@ -1,6 +1,6 @@
 const manifest = {
   id: "community.streamisko",
-  version: "0.2.0",
+  version: "0.3.0",
   name: "Streamiško",
   description: "Minimal Streamiško Stremio addon scaffold.",
   resources: ["stream"],
@@ -75,6 +75,60 @@ async function getMovieDetails(imdbId) {
   }
 }
 
+async function fetchSkTorrentPage(url) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 6000);
+
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        "User-Agent": "Mozilla/5.0 Streamisko/0.3",
+        Accept: "text/html,application/xhtml+xml"
+      }
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    return await response.text();
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function addTorrentIdsFromHtml(html, torrentIds) {
+  if (!html) {
+    return;
+  }
+
+  const detailLinkRegex = /details\.php\?[^"'<>\s]*/gi;
+
+  for (const match of html.matchAll(detailLinkRegex)) {
+    const idMatch = match[0].match(/[?&](?:amp;)?id=([a-f0-9]{40})/i);
+    if (idMatch) {
+      torrentIds.add(idMatch[1].toLowerCase());
+    }
+  }
+}
+
+function getLastSearchPage(html) {
+  let lastPage = 1;
+  const pageRegex = /(?:\?|&|&amp;)page=(\d+)/gi;
+
+  for (const match of html.matchAll(pageRegex)) {
+    const page = Number(match[1]);
+    if (Number.isSafeInteger(page) && page > lastPage) {
+      lastPage = page;
+    }
+  }
+
+  return lastPage;
+}
+
 async function countSkTorrentResults(movie) {
   if (!movie || movie.name === "Unknown movie") {
     return 0;
@@ -92,39 +146,39 @@ async function countSkTorrentResults(movie) {
   searchUrl.searchParams.set("jazyk", "");
   searchUrl.searchParams.set("active", "0");
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 6000);
-
-  try {
-    const response = await fetch(searchUrl, {
-      signal: controller.signal,
-      headers: {
-        "User-Agent": "Mozilla/5.0 Streamisko/0.2",
-        Accept: "text/html,application/xhtml+xml"
-      }
-    });
-
-    if (!response.ok) {
-      return 0;
-    }
-
-    const html = await response.text();
-    const torrentIds = new Set();
-    const detailLinkRegex = /details\.php\?[^"'<>\s]*/gi;
-
-    for (const match of html.matchAll(detailLinkRegex)) {
-      const idMatch = match[0].match(/[?&](?:amp;)?id=([a-f0-9]{40})/i);
-      if (idMatch) {
-        torrentIds.add(idMatch[1].toLowerCase());
-      }
-    }
-
-    return torrentIds.size;
-  } catch {
+  const firstPageHtml = await fetchSkTorrentPage(searchUrl);
+  if (!firstPageHtml) {
     return 0;
-  } finally {
-    clearTimeout(timeout);
   }
+
+  const torrentIds = new Set();
+  addTorrentIdsFromHtml(firstPageHtml, torrentIds);
+
+  const lastPage = getLastSearchPage(firstPageHtml);
+  const pages = [];
+
+  for (let page = 2; page <= lastPage; page += 1) {
+    pages.push(page);
+  }
+
+  const batchSize = 5;
+
+  for (let index = 0; index < pages.length; index += batchSize) {
+    const batch = pages.slice(index, index + batchSize);
+    const htmlPages = await Promise.all(
+      batch.map((page) => {
+        const pageUrl = new URL(searchUrl);
+        pageUrl.searchParams.set("page", String(page));
+        return fetchSkTorrentPage(pageUrl);
+      })
+    );
+
+    for (const html of htmlPages) {
+      addTorrentIdsFromHtml(html, torrentIds);
+    }
+  }
+
+  return torrentIds.size;
 }
 
 module.exports = async function handler(req, res) {
