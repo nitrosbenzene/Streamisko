@@ -1,6 +1,6 @@
 const manifest = {
   id: "community.streamisko",
-  version: "0.4.0",
+  version: "0.5.0",
   name: "Streamiško",
   description: "Minimal Streamiško Stremio addon scaffold.",
   resources: ["stream"],
@@ -24,6 +24,33 @@ function getBaseUrl(req) {
   const protocol = req.headers["x-forwarded-proto"] || "https";
   const host = req.headers["x-forwarded-host"] || req.headers.host;
   return `${protocol}://${host}`;
+}
+
+function getSkTorrentCredentials() {
+  const uid = String(process.env.SKTORRENT_UID || "").trim();
+  const pass = String(process.env.SKTORRENT_PASS || "").trim();
+
+  if (!uid || !pass) {
+    return null;
+  }
+
+  return { uid, pass };
+}
+
+function getSkTorrentHeaders(accept) {
+  const headers = {
+    "User-Agent": "Mozilla/5.0 Streamisko/0.5",
+    Accept: accept,
+    "Accept-Language": "sk,cs;q=0.9,en;q=0.6",
+    Referer: "https://sktorrent.eu/"
+  };
+
+  const credentials = getSkTorrentCredentials();
+  if (credentials) {
+    headers.Cookie = `uid=${credentials.uid}; pass=${credentials.pass}`;
+  }
+
+  return headers;
 }
 
 async function getMovieDetails(imdbId) {
@@ -82,10 +109,7 @@ async function fetchSkTorrentPage(url) {
   try {
     const response = await fetch(url, {
       signal: controller.signal,
-      headers: {
-        "User-Agent": "Mozilla/5.0 Streamisko/0.4",
-        Accept: "text/html,application/xhtml+xml"
-      }
+      headers: getSkTorrentHeaders("text/html,application/xhtml+xml")
     });
 
     if (!response.ok) {
@@ -259,9 +283,114 @@ async function findSkTorrentResults(movie) {
   return Array.from(torrentsById.values());
 }
 
+function contentDispositionFileName(contentDisposition) {
+  if (!contentDisposition) {
+    return null;
+  }
+
+  const utf8Match = contentDisposition.match(/filename\*\s*=\s*UTF-8''([^;]+)/i);
+  if (utf8Match) {
+    const encoded = utf8Match[1].trim().replace(/^"|"$/g, "");
+    try {
+      return decodeURIComponent(encoded);
+    } catch {
+      return encoded;
+    }
+  }
+
+  const quotedMatch = contentDisposition.match(/filename\s*=\s*"([^"]+)"/i);
+  if (quotedMatch) {
+    return quotedMatch[1].trim();
+  }
+
+  const plainMatch = contentDisposition.match(/filename\s*=\s*([^;]+)/i);
+  if (plainMatch) {
+    return plainMatch[1].trim().replace(/^"|"$/g, "");
+  }
+
+  return null;
+}
+
+async function fetchTorrentFileName(id) {
+  if (!getSkTorrentCredentials()) {
+    return null;
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  const url = `https://sktorrent.eu/torrent/download.php?id=${encodeURIComponent(id)}`;
+
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      redirect: "follow",
+      headers: getSkTorrentHeaders("application/x-bittorrent,application/octet-stream,*/*")
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const contentType = response.headers.get("content-type") || "";
+    if (/text\/html/i.test(contentType)) {
+      return null;
+    }
+
+    const contentDisposition = response.headers.get("content-disposition") || "";
+    const headerName = contentDispositionFileName(contentDisposition);
+
+    if (headerName) {
+      return headerName;
+    }
+
+    try {
+      const finalUrl = new URL(response.url);
+      const lastPart = decodeURIComponent(finalUrl.pathname.split("/").pop() || "");
+      if (/\.torrent$/i.test(lastPart)) {
+        return lastPart;
+      }
+    } catch {
+      // No usable filename in the final URL.
+    }
+
+    return null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function addTorrentFileNames(torrents) {
+  if (!getSkTorrentCredentials() || !torrents.length) {
+    return torrents.map((torrent) => ({ ...torrent, fileName: null }));
+  }
+
+  const enriched = new Array(torrents.length);
+  const batchSize = 8;
+
+  for (let index = 0; index < torrents.length; index += batchSize) {
+    const batch = torrents.slice(index, index + batchSize);
+    const batchResults = await Promise.all(
+      batch.map(async (torrent) => ({
+        ...torrent,
+        fileName: await fetchTorrentFileName(torrent.id)
+      }))
+    );
+
+    for (let offset = 0; offset < batchResults.length; offset += 1) {
+      enriched[index + offset] = batchResults[offset];
+    }
+  }
+
+  return enriched;
+}
+
 function torrentToStream(torrent, index) {
+  const fileName = torrent.fileName || "Unavailable (SKTorrent auth required or download failed)";
   const details = [
     torrent.title,
+    `Torrent file: ${fileName}`,
     `Size: ${torrent.size} • Seeders: ${torrent.seeders} • Leechers: ${torrent.leechers}`,
     `Added: ${torrent.added} • SKTorrent ID: ${torrent.id}`
   ];
@@ -298,7 +427,8 @@ module.exports = async function handler(req, res) {
 
     const imdbId = String(req.query.id || "");
     const movie = await getMovieDetails(imdbId);
-    const torrents = await findSkTorrentResults(movie);
+    const foundTorrents = await findSkTorrentResults(movie);
+    const torrents = await addTorrentFileNames(foundTorrents);
 
     const helloStream = {
       name: "Streamiško",
