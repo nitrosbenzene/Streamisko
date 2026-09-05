@@ -38,6 +38,17 @@ function streamSizeBytes(stream) {
   return match ? parseSizeBytes(match[1]) : -1;
 }
 
+function isDebugStream(stream) {
+  const name = String(stream && stream.name || "");
+  const description = String(stream && stream.description || "");
+  const text = `${name}\n${description}`;
+
+  return /hello\s+streamiško/i.test(text)
+    || /hello\s+streamisko/i.test(text)
+    || /streamiško\s+debug/i.test(text)
+    || /streamisko\s+debug/i.test(text);
+}
+
 function getBaseUrl(req) {
   const protocol = req.headers["x-forwarded-proto"] || "https";
   const host = req.headers["x-forwarded-host"] || req.headers.host;
@@ -71,15 +82,14 @@ function wireUncachedTorBoxStreams(streams, baseUrl) {
 }
 
 function sortStreams(streams) {
-  if (!Array.isArray(streams) || streams.length <= 2) return streams;
-
-  const helloStream = streams[0];
-  const torrentStreams = streams.slice(1).map((stream, originalIndex) => ({
-    stream,
-    originalIndex,
-    cacheRank: cacheRank(stream),
-    sizeBytes: streamSizeBytes(stream)
-  }));
+  const torrentStreams = (Array.isArray(streams) ? streams : [])
+    .filter((stream) => !isDebugStream(stream))
+    .map((stream, originalIndex) => ({
+      stream,
+      originalIndex,
+      cacheRank: cacheRank(stream),
+      sizeBytes: streamSizeBytes(stream)
+    }));
 
   torrentStreams.sort((a, b) => {
     if (a.cacheRank !== b.cacheRank) return a.cacheRank - b.cacheRank;
@@ -87,7 +97,7 @@ function sortStreams(streams) {
     return a.originalIndex - b.originalIndex;
   });
 
-  return [helloStream, ...torrentStreams.map((item) => item.stream)];
+  return torrentStreams.map((item) => item.stream);
 }
 
 function captureResponse() {
