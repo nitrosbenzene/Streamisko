@@ -38,6 +38,38 @@ function streamSizeBytes(stream) {
   return match ? parseSizeBytes(match[1]) : -1;
 }
 
+function getBaseUrl(req) {
+  const protocol = req.headers["x-forwarded-proto"] || "https";
+  const host = req.headers["x-forwarded-host"] || req.headers.host;
+  return `${protocol}://${host}`;
+}
+
+function skTorrentIdFromStream(stream) {
+  const description = String(stream && stream.description || "");
+  const match = description.match(/SKTorrent ID:\s*([a-f0-9]{40})\b/i);
+  return match ? match[1].toLowerCase() : null;
+}
+
+function wireUncachedTorBoxStreams(streams, baseUrl) {
+  return (Array.isArray(streams) ? streams : []).map((stream) => {
+    if (!stream || cacheRank(stream) !== 1) return stream;
+
+    const skTorrentId = skTorrentIdFromStream(stream);
+    if (!skTorrentId) return stream;
+
+    const downloadUrl = new URL(`${baseUrl}/api/torbox-uncached`);
+    downloadUrl.searchParams.set("route", "download");
+    downloadUrl.searchParams.set("torrent", skTorrentId);
+
+    const rewritten = {
+      ...stream,
+      url: downloadUrl.toString()
+    };
+    delete rewritten.externalUrl;
+    return rewritten;
+  });
+}
+
 function sortStreams(streams) {
   if (!Array.isArray(streams) || streams.length <= 2) return streams;
 
@@ -107,7 +139,7 @@ module.exports = async function handler(req, res) {
   try {
     const body = JSON.parse(captured.body);
     if (body && Array.isArray(body.streams)) {
-      body.streams = sortStreams(body.streams);
+      body.streams = wireUncachedTorBoxStreams(sortStreams(body.streams), getBaseUrl(req));
       res.setHeader("Content-Type", "application/json; charset=utf-8");
       return res.end(JSON.stringify(body));
     }
