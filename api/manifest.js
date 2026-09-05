@@ -3,7 +3,7 @@ const manifest = {
   version: "1.0.4",
   name: "Streamiško",
   description: "Streamiško Stremio addon with SKTorrent search, episode-aware series matching and TorBox cached/uncached handling.",
-  logo: "https://raw.githubusercontent.com/nitrosbenzene/Streamisko/main/streamisko_logo.png",
+  logo: "https://raw.githubusercontent.com/nitrosbenzene/Streamisko/main/streamisko_logo_new.png",
   resources: ["stream"],
   types: ["movie", "series"],
   idPrefixes: ["tt"],
