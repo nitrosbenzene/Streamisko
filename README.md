@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="streamisko_logo.png" alt="Streamiško logo" width="360" />
+</p>
+
 # Streamiško
 
 A Stremio addon designed for Vercel that searches SKTorrent results, checks TorBox cache availability, and exposes cached results as playable streams.
