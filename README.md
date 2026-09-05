@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="streamisko_logo.png" alt="Streamiško logo" width="360" />
+  <img src="streamisko_logo_new.png" alt="Streamiško logo" width="360" />
 </p>
 
 # Streamiško
